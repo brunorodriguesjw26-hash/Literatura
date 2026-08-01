@@ -9,8 +9,7 @@ st.set_page_config(
 )
 
 # Substitui pela tua Connection String do Supabase
-DB_URL = "postgresql://postgres.pryqscahyzdbuhochvkh:Novembro2016@aws-0-eu-central-1.pooler.supabase.com:6543/postgres"
-
+DB_URL = "postgresql://postgres.pryqscahyzdbuhochvkh:Novembro2016@aws-0-eu-west-1.pooler.supabase.com:5432/postgres"
 def get_connection():
     return psycopg2.connect(DB_URL)
 
