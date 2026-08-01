@@ -38,8 +38,8 @@ criar_tabela()
 # Título da App
 st.title("📚 Gestão de Encomendas de Livros")
 
-# Criar as Abas
-aba1, aba2 = st.tabs(["➕ Nova Encomenda", "📊 Tabela e Histórico"])
+# Criar as Abas Principais
+aba1, aba2 = st.tabs(["➕ Nova Encomenda", "📊 Consulta e Gestão"])
 
 # --- ABA 1: FORMULÁRIO DE INSERÇÃO ---
 with aba1:
@@ -69,10 +69,8 @@ with aba1:
             else:
                 st.warning("⚠️ Por favor preenche todos os campos.")
 
-# --- ABA 2: TABELA DE CONSULTA, FILTROS E ELIMINAÇÃO ---
+# --- ABA 2: CONSULTA E GESTÃO (DIVIDIDA EM SUB-ABAS) ---
 with aba2:
-    st.subheader("Histórico Completo de Encomendas")
-
     try:
         conn = get_connection()
         query = 'SELECT id AS "ID", data AS "Data/Hora", pedido AS "Livro / Pedido", destinatario AS "Destinatário" FROM encomendas ORDER BY id DESC'
@@ -80,53 +78,60 @@ with aba2:
         conn.close()
 
         if not df.empty:
-            # --- FILTROS DE PESQUISA ---
-            st.markdown("### 🔍 Pesquisar / Filtrar")
-            col_f1, col_f2 = st.columns(2)
-            filtro_pedido = col_f1.text_input("Filtrar por Livro / Pedido:", "")
-            filtro_destinatario = col_f2.text_input("Filtrar por Destinatário:", "")
+            # Sub-abas dentro da Aba 2
+            sub_aba_tabela, sub_aba_gestao = st.tabs(["📋 Tabela e Histórico", "🗑️ Anular / Eliminar"])
 
-            # Aplicação dos filtros
-            df_filtrado = df.copy()
-            if filtro_pedido:
-                df_filtrado = df_filtrado[df_filtrado["Livro / Pedido"].str.contains(filtro_pedido, case=False, na=False)]
-            if filtro_destinatario:
-                df_filtrado = df_filtrado[df_filtrado["Destinatário"].str.contains(filtro_destinatario, case=False, na=False)]
+            # --- SUB-ABA 1: TABELA E FILTROS ---
+            with sub_aba_tabela:
+                st.subheader("Histórico de Encomendas")
+                
+                # Filtros de Pesquisa
+                st.markdown("##### 🔍 Pesquisar / Filtrar")
+                col_f1, col_f2 = st.columns(2)
+                filtro_pedido = col_f1.text_input("Filtrar por Livro / Pedido:", "")
+                filtro_destinatario = col_f2.text_input("Filtrar por Destinatário:", "")
 
-            # Métricas
-            col1, col2 = st.columns(2)
-            col1.metric("Total de Encomendas Mostradas", len(df_filtrado))
-            col2.metric("Última Encomenda", str(df["Data/Hora"].iloc[0]))
+                # Aplicar filtros
+                df_filtrado = df.copy()
+                if filtro_pedido:
+                    df_filtrado = df_filtrado[df_filtrado["Livro / Pedido"].str.contains(filtro_pedido, case=False, na=False)]
+                if filtro_destinatario:
+                    df_filtrado = df_filtrado[df_filtrado["Destinatário"].str.contains(filtro_destinatario, case=False, na=False)]
 
-            st.markdown("---")
-            st.dataframe(df_filtrado, use_container_width=True)
+                # Métricas em destaque
+                col1, col2 = st.columns(2)
+                col1.metric("Total de Encomendas Exibidas", len(df_filtrado))
+                col2.metric("Última Encomenda Registada", str(df["Data/Hora"].iloc[0]))
 
-            st.markdown("---")
+                st.markdown("---")
+                st.dataframe(df_filtrado, use_container_width=True)
 
-            # --- ANULAR / ELIMINAR REGISTO ---
-            st.subheader("🗑️ Anular / Eliminar Registos")
-            col_del1, col_del2 = st.columns([3, 1])
-            
-            # Caixa para escolher o ID a eliminar
-            id_para_eliminar = col_del1.selectbox(
-                "Seleciona o ID da encomenda que pretendes eliminar:",
-                options=df["ID"].tolist()
-            )
-            
-            btn_eliminar = col_del2.button("❌ Eliminar Encomenda", type="primary")
+            # --- SUB-ABA 2: ANULAR / ELIMINAR ---
+            with sub_aba_gestao:
+                st.subheader("Eliminar Encomenda Registada")
+                st.caption("Seleciona o ID da encomenda que pretendes remover permanentemente da base de dados.")
 
-            if btn_eliminar:
-                try:
-                    conn = get_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM encomendas WHERE id = %s", (id_para_eliminar,))
-                    conn.commit()
-                    cursor.close()
-                    conn.close()
-                    st.success(f"✅ Encomenda ID {id_para_eliminar} eliminada com sucesso!")
-                    st.rerun()  # Recarrega a página para atualizar a tabela
-                except Exception as e:
-                    st.error(f"Erro ao eliminar encomenda: {e}")
+                col_del1, col_del2 = st.columns([3, 1])
+                
+                id_para_eliminar = col_del1.selectbox(
+                    "Seleciona o ID da encomenda:",
+                    options=df["ID"].tolist()
+                )
+                
+                btn_eliminar = col_del2.button("❌ Eliminar Encomenda", type="primary")
+
+                if btn_eliminar:
+                    try:
+                        conn = get_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM encomendas WHERE id = %s", (id_para_eliminar,))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        st.success(f"✅ Encomenda ID {id_para_eliminar} eliminada com sucesso!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao eliminar encomenda: {e}")
 
         else:
             st.info("Ainda não existem encomendas registadas.")
