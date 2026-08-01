@@ -1,7 +1,7 @@
 from datetime import datetime
-streamlit
-pandas
-psycopg2-binary
+import pandas as pd
+import psycopg2
+import streamlit as st
 
 # Configuração da página
 st.set_page_config(
