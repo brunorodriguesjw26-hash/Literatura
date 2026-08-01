@@ -38,8 +38,12 @@ criar_tabela()
 # Título da App
 st.title("📚 Gestão de Encomendas de Livros")
 
-# Criar as Abas Principais
-aba1, aba2 = st.tabs(["➕ Nova Encomenda", "📊 Consulta e Gestão"])
+# Criar as 3 Abas Principais no topo
+aba1, aba2, aba3 = st.tabs([
+    "➕ Nova Encomenda", 
+    "📊 Tabela e Histórico", 
+    "🗑️ Gestão e Eliminação"
+])
 
 # --- ABA 1: FORMULÁRIO DE INSERÇÃO ---
 with aba1:
@@ -69,71 +73,71 @@ with aba1:
             else:
                 st.warning("⚠️ Por favor preenche todos os campos.")
 
-# --- ABA 2: CONSULTA E GESTÃO (DIVIDIDA EM SUB-ABAS) ---
+# --- Carregar Dados Globais ---
+try:
+    conn = get_connection()
+    query = 'SELECT id AS "ID", data AS "Data/Hora", pedido AS "Livro / Pedido", destinatario AS "Destinatário" FROM encomendas ORDER BY id DESC'
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+except Exception as e:
+    df = pd.DataFrame()
+    st.error(f"Erro ao carregar dados: {e}")
+
+# --- ABA 2: APENAS CONSULTA E FILTROS ---
 with aba2:
-    try:
-        conn = get_connection()
-        query = 'SELECT id AS "ID", data AS "Data/Hora", pedido AS "Livro / Pedido", destinatario AS "Destinatário" FROM encomendas ORDER BY id DESC'
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+    st.subheader("Histórico Completo de Encomendas")
 
-        if not df.empty:
-            # Sub-abas dentro da Aba 2
-            sub_aba_tabela, sub_aba_gestao = st.tabs(["📋 Tabela e Histórico", "🗑️ Anular / Eliminar"])
+    if not df.empty:
+        # Filtros de Pesquisa
+        st.markdown("##### 🔍 Pesquisar / Filtrar")
+        col_f1, col_f2 = st.columns(2)
+        filtro_pedido = col_f1.text_input("Filtrar por Livro / Pedido:", "")
+        filtro_destinatario = col_f2.text_input("Filtrar por Destinatário:", "")
 
-            # --- SUB-ABA 1: TABELA E FILTROS ---
-            with sub_aba_tabela:
-                st.subheader("Histórico de Encomendas")
-                
-                # Filtros de Pesquisa
-                st.markdown("##### 🔍 Pesquisar / Filtrar")
-                col_f1, col_f2 = st.columns(2)
-                filtro_pedido = col_f1.text_input("Filtrar por Livro / Pedido:", "")
-                filtro_destinatario = col_f2.text_input("Filtrar por Destinatário:", "")
+        # Aplicar filtros
+        df_filtrado = df.copy()
+        if filtro_pedido:
+            df_filtrado = df_filtrado[df_filtrado["Livro / Pedido"].str.contains(filtro_pedido, case=False, na=False)]
+        if filtro_destinatario:
+            df_filtrado = df_filtrado[df_filtrado["Destinatário"].str.contains(filtro_destinatario, case=False, na=False)]
 
-                # Aplicar filtros
-                df_filtrado = df.copy()
-                if filtro_pedido:
-                    df_filtrado = df_filtrado[df_filtrado["Livro / Pedido"].str.contains(filtro_pedido, case=False, na=False)]
-                if filtro_destinatario:
-                    df_filtrado = df_filtrado[df_filtrado["Destinatário"].str.contains(filtro_destinatario, case=False, na=False)]
+        # Métricas em destaque
+        col1, col2 = st.columns(2)
+        col1.metric("Total de Encomendas Exibidas", len(df_filtrado))
+        col2.metric("Última Encomenda Registada", str(df["Data/Hora"].iloc[0]))
 
-                # Métricas em destaque
-                col1, col2 = st.columns(2)
-                col1.metric("Total de Encomendas Exibidas", len(df_filtrado))
-                col2.metric("Última Encomenda Registada", str(df["Data/Hora"].iloc[0]))
+        st.markdown("---")
+        st.dataframe(df_filtrado, use_container_width=True)
+    else:
+        st.info("Ainda não existem encomendas registadas.")
 
-                st.markdown("---")
-                st.dataframe(df_filtrado, use_container_width=True)
+# --- ABA 3: APENAS GESTÃO E ELIMINAÇÃO ---
+with aba3:
+    st.subheader("Eliminar Encomenda Registada")
 
-            # --- SUB-ABA 2: ANULAR / ELIMINAR ---
-            with sub_aba_gestao:
-                st.subheader("Eliminar Encomenda Registada")
-                st.caption("Seleciona o ID da encomenda que pretendes remover permanentemente da base de dados.")
+    if not df.empty:
+        st.caption("Seleciona o ID da encomenda que pretendes remover permanentemente da base de dados.")
 
-                col_del1, col_del2 = st.columns([3, 1])
-                
-                id_para_eliminar = col_del1.selectbox(
-                    "Seleciona o ID da encomenda:",
-                    options=df["ID"].tolist()
-                )
-                
-                btn_eliminar = col_del2.button("❌ Eliminar Encomenda", type="primary")
+        col_del1, col_del2 = st.columns([3, 1])
+        
+        id_para_eliminar = col_del1.selectbox(
+            "Seleciona o ID da encomenda a eliminar:",
+            options=df["ID"].tolist()
+        )
+        
+        btn_eliminar = col_del2.button("❌ Eliminar Encomenda", type="primary")
 
-                if btn_eliminar:
-                    try:
-                        conn = get_connection()
-                        cursor = conn.cursor()
-                        cursor.execute("DELETE FROM encomendas WHERE id = %s", (id_para_eliminar,))
-                        conn.commit()
-                        cursor.close()
-                        conn.close()
-                        st.success(f"✅ Encomenda ID {id_para_eliminar} eliminada com sucesso!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao eliminar encomenda: {e}")
-
-        else:
-            st.info("Ainda não existem encomendas registadas.")
-    except Exception as e:
-        st.error(f"Erro ao carregar dados: {e}")
+        if btn_eliminar:
+            try:
+                conn = get_connection()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM encomendas WHERE id = %s", (id_para_eliminar,))
+                conn.commit()
+                cursor.close()
+                conn.close()
+                st.success(f"✅ Encomenda ID {id_para_eliminar} eliminada com sucesso!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao eliminar encomenda: {e}")
+    else:
+        st.info("Não há registos disponíveis para eliminar.")
