@@ -9,7 +9,7 @@ st.set_page_config(
 )
 
 # Substitui pela tua Connection String do Supabase
-DB_URL = "TEU_POSTGRESQL_CONNECTION_STRING_AQUI"
+DB_URL = postgresql://postgres:Novembro2016@db.pryqscahyzdbuhochvkh.supabase.co:5432/postgres
 
 
 def get_connection():
