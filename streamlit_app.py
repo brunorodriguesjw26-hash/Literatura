@@ -8,11 +8,11 @@ st.set_page_config(
     page_title="Gestão de Encomendas", page_icon="📚", layout="wide"
 )
 
-# Substitui pela tua Connection String do Supabase
+# Connection String do Supabase
 DB_URL = "postgresql://postgres.pryqscahyzdbuhochvkh:Novembro2016@aws-0-eu-west-1.pooler.supabase.com:5432/postgres"
+
 def get_connection():
     return psycopg2.connect(DB_URL)
-
 
 # Criar a tabela no Supabase automaticamente caso ainda não exista
 def criar_tabela():
@@ -32,7 +32,6 @@ def criar_tabela():
         conn.close()
     except Exception as e:
         st.error(f"Erro ao ligar à base de dados: {e}")
-
 
 criar_tabela()
 
@@ -58,43 +57,77 @@ with aba1:
                     conn = get_connection()
                     cursor = conn.cursor()
                     cursor.execute(
-                        "INSERT INTO encomendas (data, pedido, destinatario)"
-                        " VALUES (%s, %s, %s)",
-                        (data_atual, pedido, destinatario),
+                        "INSERT INTO encomendas (data, pedido, destinatario) VALUES (%s, %s, %s)",
+                        (data_atual, pedido, destinatario)
                     )
                     conn.commit()
                     cursor.close()
                     conn.close()
-                    st.success(
-                        f"✅ Encomenda para '{destinatario}' guardada com"
-                        " sucesso!"
-                    )
+                    st.success(f"✅ Encomenda para '{destinatario}' guardada com sucesso!")
                 except Exception as e:
                     st.error(f"Erro ao guardar: {e}")
             else:
                 st.warning("⚠️ Por favor preenche todos os campos.")
 
-# --- ABA 2: TABELA DE CONSULTA ---
+# --- ABA 2: TABELA DE CONSULTA, FILTROS E ELIMINAÇÃO ---
 with aba2:
     st.subheader("Histórico Completo de Encomendas")
 
     try:
         conn = get_connection()
-        query = (
-            'SELECT id AS "ID", data AS "Data/Hora", pedido AS "Livro /'
-            ' Pedido", destinatario AS "Destinatário" FROM encomendas ORDER BY'
-            " id DESC"
-        )
+        query = 'SELECT id AS "ID", data AS "Data/Hora", pedido AS "Livro / Pedido", destinatario AS "Destinatário" FROM encomendas ORDER BY id DESC'
         df = pd.read_sql_query(query, conn)
         conn.close()
 
         if not df.empty:
+            # --- FILTROS DE PESQUISA ---
+            st.markdown("### 🔍 Pesquisar / Filtrar")
+            col_f1, col_f2 = st.columns(2)
+            filtro_pedido = col_f1.text_input("Filtrar por Livro / Pedido:", "")
+            filtro_destinatario = col_f2.text_input("Filtrar por Destinatário:", "")
+
+            # Aplicação dos filtros
+            df_filtrado = df.copy()
+            if filtro_pedido:
+                df_filtrado = df_filtrado[df_filtrado["Livro / Pedido"].str.contains(filtro_pedido, case=False, na=False)]
+            if filtro_destinatario:
+                df_filtrado = df_filtrado[df_filtrado["Destinatário"].str.contains(filtro_destinatario, case=False, na=False)]
+
+            # Métricas
             col1, col2 = st.columns(2)
-            col1.metric("Total de Encomendas", len(df))
+            col1.metric("Total de Encomendas Mostradas", len(df_filtrado))
             col2.metric("Última Encomenda", str(df["Data/Hora"].iloc[0]))
 
             st.markdown("---")
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df_filtrado, use_container_width=True)
+
+            st.markdown("---")
+
+            # --- ANULAR / ELIMINAR REGISTO ---
+            st.subheader("🗑️ Anular / Eliminar Registos")
+            col_del1, col_del2 = st.columns([3, 1])
+            
+            # Caixa para escolher o ID a eliminar
+            id_para_eliminar = col_del1.selectbox(
+                "Seleciona o ID da encomenda que pretendes eliminar:",
+                options=df["ID"].tolist()
+            )
+            
+            btn_eliminar = col_del2.button("❌ Eliminar Encomenda", type="primary")
+
+            if btn_eliminar:
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM encomendas WHERE id = %s", (id_para_eliminar,))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+                    st.success(f"✅ Encomenda ID {id_para_eliminar} eliminada com sucesso!")
+                    st.rerun()  # Recarrega a página para atualizar a tabela
+                except Exception as e:
+                    st.error(f"Erro ao eliminar encomenda: {e}")
+
         else:
             st.info("Ainda não existem encomendas registadas.")
     except Exception as e:
