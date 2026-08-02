@@ -116,6 +116,7 @@ def criar_tabelas():
         );
         """)
 
+        # Garantir colunas essenciais caso a tabela já exista sem elas
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS congregacao VARCHAR(100);")
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS idade INT;")
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS aprovado BOOLEAN DEFAULT FALSE;")
@@ -124,6 +125,9 @@ def criar_tabelas():
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS acesso_territorios BOOLEAN DEFAULT FALSE;")
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS acesso_limpeza BOOLEAN DEFAULT FALSE;")
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS acesso_relatorios BOOLEAN DEFAULT FALSE;")
+        
+        cursor.execute("ALTER TABLE relatorios_diarios ADD COLUMN IF NOT EXISTS horas INT DEFAULT 0;")
+        cursor.execute("ALTER TABLE relatorios_diarios ADD COLUMN IF NOT EXISTS estudios INT DEFAULT 0;")
 
         conn.commit()
         cursor.close()
@@ -173,6 +177,10 @@ def registar_utilizador(nome, congregacao, idade, email, password):
         conn.commit()
         cursor.close()
         conn.close()
+        
+        # Limpar cache de utilizadores
+        st.cache_data.clear()
+
         if is_admin_principal:
             return True, "Conta Administrador principal criada com sucesso! Pode entrar."
         return True, "Registo efetuado com sucesso! Aguarde que o administrador aprove a sua conta e atribua acessos."
@@ -222,6 +230,7 @@ def autenticar_utilizador(email, password):
     except Exception as e:
         return False, "ERRO", f"Erro na autenticação: {e}"
 
+@st.cache_data(ttl=600)
 def carregar_utilizadores_sistema():
     try:
         conn = get_connection()
@@ -249,10 +258,14 @@ def atualizar_permissoes_utilizador(user_id, aprovado, is_admin, lit, terr, limp
         conn.commit()
         cursor.close()
         conn.close()
+        
+        # Limpar cache para refletir novas permissões imediatamente
+        st.cache_data.clear()
         return True
     except Exception:
         return False
 
+@st.cache_data(ttl=600)
 def carregar_dados_literatura():
     try:
         conn = get_connection()
@@ -299,10 +312,14 @@ def guardar_territorio(num, nome, obs, ficheiro):
         conn.commit()
         cursor.close()
         conn.close()
+        
+        # Limpar cache de territórios
+        st.cache_data.clear()
         return True, "Território guardado com sucesso!"
     except Exception as e:
         return False, f"Erro ao guardar território: {e}"
 
+@st.cache_data(ttl=600)
 def carregar_territorios():
     try:
         conn = get_connection()
@@ -316,6 +333,36 @@ def carregar_territorios():
     except Exception as e:
         st.error(f"Erro ao carregar territórios: {e}")
         return []
+
+@st.cache_data(ttl=300)
+def carregar_relatorios_mes(email, is_admin, mes, ano):
+    try:
+        conn = get_connection()
+        if is_admin:
+            q_mes = "SELECT id, nome_publicador, data_pregação, com_quem, horas, estudios FROM relatorios_diarios WHERE EXTRACT(MONTH FROM data_pregação) = %s AND EXTRACT(YEAR FROM data_pregação) = %s ORDER BY data_pregação DESC"
+            df = pd.read_sql_query(q_mes, conn, params=(mes, ano))
+        else:
+            q_mes = "SELECT id, nome_publicador, data_pregação, com_quem, horas, estudios FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s AND EXTRACT(MONTH FROM data_pregação) = %s AND EXTRACT(YEAR FROM data_pregação) = %s ORDER BY data_pregação DESC"
+            df = pd.read_sql_query(q_mes, conn, params=(email.lower(), mes, ano))
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def carregar_todos_relatorios(email, is_admin):
+    try:
+        conn = get_connection()
+        if is_admin:
+            q_geral = "SELECT data_pregação, horas, estudios, nome_publicador FROM relatorios_diarios"
+            df = pd.read_sql_query(q_geral, conn)
+        else:
+            q_geral = "SELECT data_pregação, horas, estudios, nome_publicador FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s"
+            df = pd.read_sql_query(q_geral, conn, params=(email.lower(),))
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 # --- GESTÃO DA SESSÃO E PERSISTÊNCIA DE 24 HORAS ---
 if "autenticado" not in st.session_state:
@@ -377,7 +424,6 @@ if not st.session_state.autenticado:
                 email = st.text_input("E-mail")
                 password = st.text_input("Palavra-passe", type="password")
                 
-                # Checkbox para memorizar sessão por 24 horas
                 lembrar_me = st.checkbox("Memorizar sessão por 24 horas")
 
                 btn_login = st.form_submit_button("Entrar", type="primary", use_container_width=True)
@@ -392,7 +438,6 @@ if not st.session_state.autenticado:
                             st.session_state.is_admin = resultado["is_admin"]
                             st.session_state.acessos = resultado["acessos"]
                             
-                            # Se selecionado, define a expiração para daqui a 24 horas; senão expira ao fim do dia corrente ou fecho do separador
                             if lembrar_me:
                                 st.session_state.expiracao_sessao = datetime.now() + timedelta(hours=24)
                             else:
@@ -575,7 +620,7 @@ else:
                 c1, c2 = st.columns([2, 1])
                 nome_livro = c1.text_input("Nome do Livro")
                 numero_pedido = c2.text_input("Nº do Pedido")
-                requerente = st.text_input("Requerente")
+                requerente = c2.text_input("Requerente") if 'c2' in locals() else st.text_input("Requerente")
                 data_pedido = st.date_input("Data do Pedido", value=datetime.now())
                 if st.form_submit_button("Guardar Encomenda", type="primary", use_container_width=True):
                     if nome_livro and requerente:
@@ -583,6 +628,7 @@ else:
                         cursor = conn.cursor()
                         cursor.execute("INSERT INTO encomendas (numero_pedido, nome_livro, requerente, data_pedido, recebido) VALUES (%s, %s, %s, %s, FALSE)", (numero_pedido, nome_livro, requerente, data_pedido))
                         conn.commit(); cursor.close(); conn.close()
+                        st.cache_data.clear()
                         st.success("Guardado!")
         with aba2:
             if not df_literatura.empty:
@@ -598,6 +644,7 @@ else:
                     conn = get_connection(); cursor = conn.cursor()
                     cursor.execute("DELETE FROM encomendas WHERE id = %s", (id_del,))
                     conn.commit(); cursor.close(); conn.close()
+                    st.cache_data.clear()
                     st.success("Eliminado!"); st.rerun()
 
     # LIMPEZA DO SALÃO
@@ -677,93 +724,66 @@ else:
                         conn.commit()
                         cursor.close()
                         conn.close()
+                        
+                        # Limpar cache de relatórios para atualizar os gráficos/tabelas
+                        st.cache_data.clear()
                         st.success(msg_ret)
                     except Exception as e:
                         st.error(f"Erro ao guardar: {e}")
 
             st.markdown("---")
             st.subheader("Os seus registos deste mês")
-            try:
-                conn = get_connection()
-                if is_admin:
-                    q_mes = "SELECT id, nome_publicador, data_pregação, com_quem, horas, estudios FROM relatorios_diarios WHERE EXTRACT(MONTH FROM data_pregação) = %s AND EXTRACT(YEAR FROM data_pregação) = %s ORDER BY data_pregação DESC"
-                    df_mes_atual = pd.read_sql_query(q_mes, conn, params=(mes_atual, ano_atual))
-                else:
-                    q_mes = "SELECT id, nome_publicador, data_pregação, com_quem, horas, estudios FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s AND EXTRACT(MONTH FROM data_pregação) = %s AND EXTRACT(YEAR FROM data_pregação) = %s ORDER BY data_pregação DESC"
-                    df_mes_atual = pd.read_sql_query(q_mes, conn, params=(st.session_state.utilizador_email.lower(), mes_atual, ano_atual))
-                conn.close()
-
-                if not df_mes_atual.empty:
-                    st.dataframe(df_mes_atual, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Ainda não tem apontamentos para este mês.")
-            except Exception as e:
-                st.error(f"Erro ao carregar dados do mês: {e}")
+            
+            df_mes_atual = carregar_relatorios_mes(st.session_state.utilizador_email, is_admin, mes_atual, ano_atual)
+            if not df_mes_atual.empty:
+                st.dataframe(df_mes_atual, use_container_width=True, hide_index=True)
+            else:
+                st.info("Ainda não tem apontamentos para este mês.")
 
         with aba_rel2:
             st.subheader("Resumo Mensal Consolidado")
             st.caption("Visão agregada de todos os meses em que foram submetidos relatórios.")
 
-            try:
-                conn = get_connection()
-                if is_admin:
-                    q_geral = "SELECT data_pregação, horas, estudios, nome_publicador FROM relatorios_diarios"
-                    df_all = pd.read_sql_query(q_geral, conn)
-                else:
-                    q_geral = "SELECT data_pregação, horas, estudios, nome_publicador FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s"
-                    df_all = pd.read_sql_query(q_geral, conn, params=(st.session_state.utilizador_email.lower(),))
-                conn.close()
+            df_all = carregar_todos_relatorios(st.session_state.utilizador_email, is_admin)
+            if not df_all.empty:
+                df_all["data_pregação"] = pd.to_datetime(df_all["data_pregação"])
+                df_all["Mes_Ano"] = df_all["data_pregação"].dt.to_period("M").astype(str)
 
-                if not df_all.empty:
-                    df_all["data_pregação"] = pd.to_datetime(df_all["data_pregação"])
-                    df_all["Mes_Ano"] = df_all["data_pregação"].dt.to_period("M").astype(str)
+                df_resumo_mensal = df_all.groupby("Mes_Ano")[["horas", "estudos"]].sum().reset_index()
+                df_resumo_mensal = df_resumo_mensal.sort_values("Mes_Ano", ascending=False)
 
-                    df_resumo_mensal = df_all.groupby("Mes_Ano")[["horas", "estudos"]].sum().reset_index()
-                    df_resumo_mensal = df_resumo_mensal.sort_values("Mes_Ano", ascending=False)
-
-                    st.dataframe(df_resumo_mensal, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Ainda não existem dados para gerar o resumo mensal.")
-            except Exception as e:
-                st.error(f"Erro ao gerar resumo mensal: {e}")
+                st.dataframe(df_resumo_mensal, use_container_width=True, hide_index=True)
+            else:
+                st.info("Ainda não existem dados para gerar o resumo mensal.")
 
         with aba_rel3:
             st.subheader("Resumo Anual de Serviço (Setembro a Agosto)")
             st.caption("Ano de Serviço organizado oficialmente de Setembro do ano anterior até Agosto do ano corrente.")
 
-            try:
-                conn = get_connection()
-                if is_admin:
-                    df_anual = pd.read_sql_query("SELECT data_pregação, horas, estudios FROM relatorios_diarios", conn)
-                else:
-                    df_anual = pd.read_sql_query("SELECT data_pregação, horas, estudios FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s", conn, params=(st.session_state.utilizador_email.lower(),))
-                conn.close()
+            df_anual = carregar_todos_relatorios(st.session_state.utilizador_email, is_admin)
+            if not df_anual.empty:
+                df_anual["data_pregação"] = pd.to_datetime(df_anual["data_pregação"])
 
-                if not df_anual.empty:
-                    df_anual["data_pregação"] = pd.to_datetime(df_anual["data_pregação"])
+                def obter_ano_servico(dt):
+                    if dt.month >= 9:
+                        return f"{dt.year}/{dt.year + 1}"
+                    else:
+                        return f"{dt.year - 1}/{dt.year}"
 
-                    def obter_ano_servico(dt):
-                        if dt.month >= 9:
-                            return f"{dt.year}/{dt.year + 1}"
-                        else:
-                            return f"{dt.year - 1}/{dt.year}"
+                df_anual["Ano_Serviço"] = df_anual["data_pregação"].apply(obter_ano_servico)
+                
+                df_agrupado_anual = df_anual.groupby("Ano_Serviço")[["horas", "estudos"]].sum().reset_index()
+                df_agrupado_anual = df_agrupado_anual.sort_values("Ano_Serviço")
 
-                    df_anual["Ano_Serviço"] = df_anual["data_pregação"].apply(obter_ano_servico)
-                    
-                    df_agrupado_anual = df_anual.groupby("Ano_Serviço")[["horas", "estudos"]].sum().reset_index()
-                    df_agrupado_anual = df_agrupado_anual.sort_values("Ano_Serviço")
+                st.markdown("### 1. Tabela e Gráfico de Horas por Ano de Serviço")
+                df_horas = df_agrupado_anual[["Ano_Serviço", "horas"]].set_index("Ano_Serviço")
+                st.dataframe(df_horas, use_container_width=True)
+                st.bar_chart(df_horas)
 
-                    st.markdown("### 1. Tabela e Gráfico de Horas por Ano de Serviço")
-                    df_horas = df_agrupado_anual[["Ano_Serviço", "horas"]].set_index("Ano_Serviço")
-                    st.dataframe(df_horas, use_container_width=True)
-                    st.bar_chart(df_horas)
-
-                    st.markdown("---")
-                    st.markdown("### 2. Tabela e Gráfico de Estudos Bíblicos por Ano de Serviço")
-                    df_estudos = df_agrupado_anual[["Ano_Serviço", "estudos"]].set_index("Ano_Serviço")
-                    st.dataframe(df_estudos, use_container_width=True)
-                    st.bar_chart(df_estudos)
-                else:
-                    st.info("Sem dados suficientes para o resumo anual.")
-            except Exception as e:
-                st.error(f"Erro ao gerar resumo anual: {e}")
+                st.markdown("---")
+                st.markdown("### 2. Tabela e Gráfico de Estudos Bíblicos por Ano de Serviço")
+                df_estudos = df_agrupado_anual[["Ano_Serviço", "estudos"]].set_index("Ano_Serviço")
+                st.dataframe(df_estudos, use_container_width=True)
+                st.bar_chart(df_estudos)
+            else:
+                st.info("Sem dados suficientes para o resumo anual.")
