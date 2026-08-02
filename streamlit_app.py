@@ -618,18 +618,30 @@ else:
         with aba1:
             with st.form("form_encomenda", clear_on_submit=True):
                 c1, c2 = st.columns([2, 1])
+                
+                # Coluna da Esquerda (Nome do Livro + Data do Pedido por baixo)
                 nome_livro = c1.text_input("Nome do Livro")
+                data_pedido = c1.date_input("Data do Pedido", value=datetime.now())
+                
+                # Coluna da Direita (Nº do Pedido + Requerente)
                 numero_pedido = c2.text_input("Nº do Pedido")
-                requerente = c2.text_input("Requerente") if 'c2' in locals() else st.text_input("Requerente")
-                data_pedido = st.date_input("Data do Pedido", value=datetime.now())
+                requerente = c2.text_input("Requerente")
+                
                 if st.form_submit_button("Guardar Encomenda", type="primary", use_container_width=True):
                     if nome_livro and requerente:
                         conn = get_connection()
                         cursor = conn.cursor()
-                        cursor.execute("INSERT INTO encomendas (numero_pedido, nome_livro, requerente, data_pedido, recebido) VALUES (%s, %s, %s, %s, FALSE)", (numero_pedido, nome_livro, requerente, data_pedido))
-                        conn.commit(); cursor.close(); conn.close()
+                        cursor.execute(
+                            "INSERT INTO encomendas (numero_pedido, nome_livro, requerente, data_pedido, recebido) VALUES (%s, %s, %s, %s, FALSE)", 
+                            (numero_pedido, nome_livro, requerente, data_pedido)
+                        )
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
                         st.cache_data.clear()
-                        st.success("Guardado!")
+                        st.success("Guardado com sucesso!")
+                    else:
+                        st.warning("Preencha pelo menos o Nome do Livro e o Requerente.")
         with aba2:
             if not df_literatura.empty:
                 st.dataframe(df_literatura, use_container_width=True, hide_index=True)
