@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import calendar
 import hashlib
 import re
@@ -317,7 +317,7 @@ def carregar_territorios():
         st.error(f"Erro ao carregar territórios: {e}")
         return []
 
-# --- GESTÃO DA SESSÃO ---
+# --- GESTÃO DA SESSÃO E PERSISTÊNCIA DE 24 HORAS ---
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 if "utilizador_nome" not in st.session_state:
@@ -332,6 +332,19 @@ if "pagina_atual" not in st.session_state:
     st.session_state.pagina_atual = "Página Inicial"
 if "modo_autenticacao" not in st.session_state:
     st.session_state.modo_autenticacao = "login"
+if "expiracao_sessao" not in st.session_state:
+    st.session_state.expiracao_sessao = None
+
+# Verificar se a sessão memorizada expirou (mais de 24 horas)
+if st.session_state.autenticado and st.session_state.expiracao_sessao:
+    if datetime.now() > st.session_state.expiracao_sessao:
+        st.session_state.autenticado = False
+        st.session_state.utilizador_nome = ""
+        st.session_state.utilizador_email = ""
+        st.session_state.is_admin = False
+        st.session_state.acessos = {}
+        st.session_state.expiracao_sessao = None
+        st.warning("A sua sessão expirou após 24 horas. Por favor, inicie sessão novamente.")
 
 # ECRÃ DE LOGIN E REGISTO
 if not st.session_state.autenticado:
@@ -363,6 +376,10 @@ if not st.session_state.autenticado:
             with st.form("form_login"):
                 email = st.text_input("E-mail")
                 password = st.text_input("Palavra-passe", type="password")
+                
+                # Checkbox para memorizar sessão por 24 horas
+                lembrar_me = st.checkbox("Memorizar sessão por 24 horas")
+
                 btn_login = st.form_submit_button("Entrar", type="primary", use_container_width=True)
 
                 if btn_login:
@@ -374,6 +391,13 @@ if not st.session_state.autenticado:
                             st.session_state.utilizador_email = resultado["email"]
                             st.session_state.is_admin = resultado["is_admin"]
                             st.session_state.acessos = resultado["acessos"]
+                            
+                            # Se selecionado, define a expiração para daqui a 24 horas; senão expira ao fim do dia corrente ou fecho do separador
+                            if lembrar_me:
+                                st.session_state.expiracao_sessao = datetime.now() + timedelta(hours=24)
+                            else:
+                                st.session_state.expiracao_sessao = datetime.now() + timedelta(hours=12)
+
                             st.success(f"Bem-vindo(a), {resultado['nome']}!")
                             st.rerun()
                         elif status == "PENDENTE":
@@ -422,6 +446,7 @@ else:
         st.session_state.utilizador_email = ""
         st.session_state.is_admin = False
         st.session_state.acessos = {}
+        st.session_state.expiracao_sessao = None
         st.session_state.pagina_atual = "Página Inicial"
         st.session_state.modo_autenticacao = "login"
         st.rerun()
