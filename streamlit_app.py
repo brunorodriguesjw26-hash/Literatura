@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, date
+import calendar
 import hashlib
 import re
 import pandas as pd
@@ -10,13 +11,12 @@ st.set_page_config(
     page_title="Painel de Gestão", layout="wide"
 )
 
-# E-mail principal definido como Administrador
+# E-mail principal definido como Administrador Principal fixo
 EMAIL_ADMINISTRADOR = "brunorodriguesj26@gmail.com"
 
 # Estilo CSS ajustado
 st.markdown("""
     <style>
-    /* Estilo para os cartões da página inicial (quando autenticado) */
     .st-key-card_home > div {
         background-color: #f8f9fa;
         border: 1px solid #e9ecef;
@@ -27,7 +27,6 @@ st.markdown("""
         height: 100%;
     }
 
-    /* CAIXA DE LOGIN / REGISTO A ROXO COM FRISO BRANCO A ENVOLVER TUDO */
     .login-container-box {
         background-color: #4A2574;       
         border: 2px solid #ffffff;       
@@ -36,12 +35,10 @@ st.markdown("""
         box-shadow: 0px 8px 16px rgba(0, 0, 0, 0.2);
     }
 
-    /* Remove fundos parasitas dentro das colunas */
     .login-container-box div[data-testid="stColumn"] {
         background-color: transparent !important;
     }
     
-    /* Cor branca para todos os textos, labels e inputs dentro da caixa roxa */
     .login-container-box label, 
     .login-container-box p, 
     .login-container-box span,
@@ -54,17 +51,14 @@ st.markdown("""
 # Connection String do Supabase
 DB_URL = "postgresql://postgres.pryqscahyzdbuhochvkh:Novembro2016@aws-0-eu-west-1.pooler.supabase.com:5432/postgres"
 
-# 1. Conexão à Base de Dados
 def get_connection():
     return psycopg2.connect(DB_URL)
 
-# 2. Criar Tabelas Automaticamente
 def criar_tabelas():
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
-        # Tabela de Encomendas
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS encomendas (
             id SERIAL PRIMARY KEY,
@@ -78,7 +72,6 @@ def criar_tabelas():
         );
         """)
         
-        # Tabela de Utilizadores
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS utilizadores (
             id SERIAL PRIMARY KEY,
@@ -88,11 +81,15 @@ def criar_tabelas():
             email VARCHAR(100) UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             aprovado BOOLEAN DEFAULT FALSE,
+            is_admin BOOLEAN DEFAULT FALSE,
+            acesso_literatura BOOLEAN DEFAULT FALSE,
+            acesso_territorios BOOLEAN DEFAULT FALSE,
+            acesso_limpeza BOOLEAN DEFAULT FALSE,
+            acesso_relatorios BOOLEAN DEFAULT FALSE,
             data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
-        # Tabela de Territórios
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS meusterritorios (
             id SERIAL PRIMARY KEY,
@@ -106,9 +103,28 @@ def criar_tabelas():
         );
         """)
 
+        # Tabela de Relatórios Diários simplificada (com quem pregou, horas, estudos)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS relatorios_diarios (
+            id SERIAL PRIMARY KEY,
+            email_utilizador VARCHAR(100) NOT NULL,
+            nome_publicador VARCHAR(100) NOT NULL,
+            data_pregação DATE NOT NULL,
+            com_quem TEXT,
+            horas INT DEFAULT 0,
+            estudos INT DEFAULT 0,
+            data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS congregacao VARCHAR(100);")
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS idade INT;")
         cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS aprovado BOOLEAN DEFAULT FALSE;")
+        cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;")
+        cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS acesso_literatura BOOLEAN DEFAULT FALSE;")
+        cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS acesso_territorios BOOLEAN DEFAULT FALSE;")
+        cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS acesso_limpeza BOOLEAN DEFAULT FALSE;")
+        cursor.execute("ALTER TABLE utilizadores ADD COLUMN IF NOT EXISTS acesso_relatorios BOOLEAN DEFAULT FALSE;")
 
         conn.commit()
         cursor.close()
@@ -118,7 +134,6 @@ def criar_tabelas():
 
 criar_tabelas()
 
-# --- Funções de Validação e Segurança ---
 def validar_requisitos_password(password: str) -> tuple[bool, str]:
     if len(password) < 14:
         return False, "A palavra-passe tem de ter no mínimo 14 caracteres."
@@ -147,21 +162,21 @@ def registar_utilizador(nome, congregacao, idade, email, password):
         hash_pw = gerar_hash_password(password)
         email_clean = email.lower().strip()
         
-        is_admin = (email_clean == EMAIL_ADMINISTRADOR.lower())
+        is_admin_principal = (email_clean == EMAIL_ADMINISTRADOR.lower())
         
         cursor.execute(
             """
-            INSERT INTO utilizadores (nome, congregacao, idade, email, password_hash, aprovado) 
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO utilizadores (nome, congregacao, idade, email, password_hash, aprovado, is_admin, acesso_literatura, acesso_territorios, acesso_limpeza, acesso_relatorios) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (nome, congregacao, idade, email_clean, hash_pw, is_admin)
+            (nome, congregacao, idade, email_clean, hash_pw, is_admin_principal, is_admin_principal, is_admin_principal, is_admin_principal, is_admin_principal, is_admin_principal)
         )
         conn.commit()
         cursor.close()
         conn.close()
-        if is_admin:
-            return True, "Conta Administrador criada com sucesso! Pode entrar."
-        return True, "Registo efetuado com sucesso! Aguarde a aprovação do administrador para conseguir entrar."
+        if is_admin_principal:
+            return True, "Conta Administrador principal criada com sucesso! Pode entrar."
+        return True, "Registo efetuado com sucesso! Aguarde que o administrador aprove a sua conta e atribua acessos."
     except psycopg2.IntegrityError:
         return False, "Este e-mail já se encontra registado."
     except Exception as e:
@@ -172,7 +187,7 @@ def autenticar_utilizador(email, password):
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, nome, password_hash, aprovado, email FROM utilizadores WHERE LOWER(email) = %s", 
+            "SELECT id, nome, password_hash, aprovado, email, is_admin, acesso_literatura, acesso_territorios, acesso_limpeza, acesso_relatorios FROM utilizadores WHERE LOWER(email) = %s", 
             (email.lower().strip(),)
         )
         user = cursor.fetchone()
@@ -180,21 +195,36 @@ def autenticar_utilizador(email, password):
         conn.close()
 
         if user:
-            user_id, nome, hash_pw, aprovado, user_email = user
+            user_id, nome, hash_pw, aprovado, user_email, is_admin, lit, terr, limp, rel = user
             if verificar_password(password, hash_pw):
                 if not aprovado and user_email.lower() != EMAIL_ADMINISTRADOR.lower():
                     return False, "PENDENTE", "A sua conta ainda aguarda aprovação pelo administrador."
-                return True, "OK", {"id": user_id, "nome": nome, "email": user_email}
+                
+                if user_email.lower() == EMAIL_ADMINISTRADOR.lower():
+                    is_admin = True
+                    lit = terr = limp = rel = True
+
+                return True, "OK", {
+                    "id": user_id, 
+                    "nome": nome, 
+                    "email": user_email, 
+                    "is_admin": is_admin,
+                    "acessos": {
+                        "Literatura": lit,
+                        "Territórios": terr,
+                        "Limpeza do Salão": limp,
+                        "Relatórios de Serviço de Campo": rel
+                    }
+                }
         return False, "ERRO", "E-mail ou palavra-passe incorretos."
     except Exception as e:
         return False, "ERRO", f"Erro na autenticação: {e}"
 
-# --- Funções de Administração ---
-def carregar_utilizadores_pendentes():
+def carregar_utilizadores_sistema():
     try:
         conn = get_connection()
         df = pd.read_sql_query(
-            "SELECT id, nome, congregacao, idade, email, data_registro FROM utilizadores WHERE aprovado = FALSE ORDER BY id DESC", 
+            "SELECT id, nome, congregacao, idade, email, aprovado, is_admin, acesso_literatura, acesso_territorios, acesso_limpeza, acesso_relatorios, data_registro FROM utilizadores ORDER BY id DESC", 
             conn
         )
         conn.close()
@@ -202,14 +232,18 @@ def carregar_utilizadores_pendentes():
     except Exception:
         return pd.DataFrame()
 
-def alterar_status_utilizador(user_id, aprovar=True):
+def atualizar_permissoes_utilizador(user_id, aprovado, is_admin, lit, terr, limp, rel):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        if aprovar:
-            cursor.execute("UPDATE utilizadores SET aprovado = TRUE WHERE id = %s", (user_id,))
-        else:
-            cursor.execute("DELETE FROM utilizadores WHERE id = %s", (user_id,))
+        cursor.execute(
+            """
+            UPDATE utilizadores 
+            SET aprovado = %s, is_admin = %s, acesso_literatura = %s, acesso_territorios = %s, acesso_limpeza = %s, acesso_relatorios = %s 
+            WHERE id = %s
+            """,
+            (aprovado, is_admin, lit, terr, limp, rel, user_id)
+        )
         conn.commit()
         cursor.close()
         conn.close()
@@ -217,7 +251,6 @@ def alterar_status_utilizador(user_id, aprovar=True):
     except Exception:
         return False
 
-# --- Funções de Literatura ---
 def carregar_dados_literatura():
     try:
         conn = get_connection()
@@ -240,7 +273,6 @@ def carregar_dados_literatura():
         st.error(f"Erro ao carregar dados: {e}")
         return pd.DataFrame()
 
-# --- Funções de Territórios ---
 def guardar_territorio(num, nome, obs, ficheiro):
     try:
         conn = get_connection()
@@ -286,28 +318,24 @@ def carregar_territorios():
 # --- GESTÃO DA SESSÃO ---
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
-
 if "utilizador_nome" not in st.session_state:
     st.session_state.utilizador_nome = ""
-
 if "utilizador_email" not in st.session_state:
     st.session_state.utilizador_email = ""
-
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
+if "acessos" not in st.session_state:
+    st.session_state.acessos = {}
 if "pagina_atual" not in st.session_state:
     st.session_state.pagina_atual = "Página Inicial"
-
 if "modo_autenticacao" not in st.session_state:
     st.session_state.modo_autenticacao = "login"
 
-
-# ==============================================================================
-# ECRÃ DE LOGIN E REGISTO (SE NÃO ESTIVER AUTENTICADO)
-# ==============================================================================
+# ECRÃ DE LOGIN E REGISTO
 if not st.session_state.autenticado:
     col_left, col_centered, col_right = st.columns([1, 2, 1])
     
     with col_centered:
-        # A CAIXA COMEÇA AQUI EM CIMA DE TUDO
         st.markdown('<div class="login-container-box">', unsafe_allow_html=True)
         
         col_titulo, col_botao_top = st.columns([3, 1])
@@ -333,8 +361,6 @@ if not st.session_state.autenticado:
             with st.form("form_login"):
                 email = st.text_input("E-mail")
                 password = st.text_input("Palavra-passe", type="password")
-                lembrar_login = st.checkbox("Memorizar Palavra Passe")
-                
                 btn_login = st.form_submit_button("Entrar", type="primary", use_container_width=True)
 
                 if btn_login:
@@ -344,7 +370,8 @@ if not st.session_state.autenticado:
                             st.session_state.autenticado = True
                             st.session_state.utilizador_nome = resultado["nome"]
                             st.session_state.utilizador_email = resultado["email"]
-                            st.session_state.lembrar_sessao = lembrar_login
+                            st.session_state.is_admin = resultado["is_admin"]
+                            st.session_state.acessos = resultado["acessos"]
                             st.success(f"Bem-vindo(a), {resultado['nome']}!")
                             st.rerun()
                         elif status == "PENDENTE":
@@ -359,16 +386,10 @@ if not st.session_state.autenticado:
                 novo_nome = st.text_input("Nome Completo")
                 nova_congregacao = st.text_input("Congregação")
                 nova_idade = st.number_input("Idade", min_value=10, max_value=120, value=25, step=1)
-                
                 novo_email = st.text_input("E-mail (usado para entrar)")
-                nova_password = st.text_input(
-                    "Palavra-passe", 
-                    type="password", 
-                    help="Requisitos: mínimo 14 caracteres, 1 letra maiúscula, 1 número e 1 símbolo especial (@, #, $, %, !)."
-                )
+                nova_password = st.text_input("Palavra-passe", type="password")
                 
-                st.caption("Requisitos da palavra-passe: Mínimo de 14 caracteres, pelo menos 1 letra maiúscula, 1 número e 1 símbolo especial.")
-                
+                st.caption("Requisitos: Mínimo 14 caracteres, 1 maiúscula, 1 número e 1 símbolo especial.")
                 btn_registar = st.form_submit_button("Submeter Registo", type="primary", use_container_width=True)
 
                 if btn_registar:
@@ -380,17 +401,13 @@ if not st.session_state.autenticado:
                         else:
                             st.error(mensagem)
                     else:
-                        st.warning("Preencha todos os campos obrigatórios para submeter o registo.")
+                        st.warning("Preencha todos os campos obrigatórios.")
         
-        # A CAIXA SÓ FECHA AQUI NO FIM DE TUDO
         st.markdown('</div>', unsafe_allow_html=True)
 
-# ==============================================================================
-# APLICAÇÃO PRINCIPAL (APÓS AUTENTICAÇÃO)
-# ==============================================================================
 else:
     df_literatura = carregar_dados_literatura()
-    is_admin = st.session_state.utilizador_email.lower() == EMAIL_ADMINISTRADOR.lower()
+    is_admin = st.session_state.is_admin or (st.session_state.utilizador_email.lower() == EMAIL_ADMINISTRADOR.lower())
 
     st.sidebar.title("Sessão Ativa")
     st.sidebar.caption(f"Utilizador: **{st.session_state.utilizador_nome}**")
@@ -401,6 +418,8 @@ else:
         st.session_state.autenticado = False
         st.session_state.utilizador_nome = ""
         st.session_state.utilizador_email = ""
+        st.session_state.is_admin = False
+        st.session_state.acessos = {}
         st.session_state.pagina_atual = "Página Inicial"
         st.session_state.modo_autenticacao = "login"
         st.rerun()
@@ -408,370 +427,160 @@ else:
     st.sidebar.markdown("---")
     st.sidebar.title("Navegação")
     
-    opcoes_menu = ["Página Inicial", "Gestão de Literatura", "Territórios", "Limpeza do Salão", "Relatórios de Serviço de Campo"]
+    opcoes_menu = ["Página Inicial"]
+    acessos = st.session_state.acessos
+    if is_admin or acessos.get("Literatura", False):
+        opcoes_menu.append("Gestão de Literatura")
+    if is_admin or acessos.get("Territórios", False):
+        opcoes_menu.append("Territórios")
+    if is_admin or acessos.get("Limpeza do Salão", False):
+        opcoes_menu.append("Limpeza do Salão")
+    if is_admin or acessos.get("Relatórios de Serviço de Campo", False):
+        opcoes_menu.append("Relatórios de Serviço de Campo")
     if is_admin:
-        opcoes_menu.append("Painel de Aprovações")
+        opcoes_menu.append("Painel de Administração e Acessos")
 
     if st.session_state.pagina_atual not in opcoes_menu:
         st.session_state.pagina_atual = "Página Inicial"
 
-    menu_selecionado = st.sidebar.radio(
-        "Ir para:",
-        opcoes_menu,
-        index=opcoes_menu.index(st.session_state.pagina_atual)
-    )
+    menu_selecionado = st.sidebar.radio("Ir para:", opcoes_menu, index=opcoes_menu.index(st.session_state.pagina_atual))
 
     if menu_selecionado != st.session_state.pagina_atual:
         st.session_state.pagina_atual = menu_selecionado
         st.rerun()
 
-    # --------------------------------------------------------------------------
-    # 1. PÁGINA INICIAL
-    # --------------------------------------------------------------------------
+    # PÁGINA INICIAL
     if st.session_state.pagina_atual == "Página Inicial":
         st.title(f"Bem-vindo, {st.session_state.utilizador_nome}")
-        st.caption("Clique no botão da secção correspondente para aceder ao respetivo módulo.")
+        st.caption("Módulos disponíveis:")
         st.markdown("---")
 
-        col1, col2, col3, col4 = st.columns(4)
+        colunas = st.columns(4)
+        todos_cartoes = [
+            ("Literatura", "Gestão de Literatura", "btn_lit", is_admin or acessos.get("Literatura", False)),
+            ("Territórios", "Territórios", "btn_terr", is_admin or acessos.get("Territórios", False)),
+            ("Limpeza do Salão", "Limpeza do Salão", "btn_limp", is_admin or acessos.get("Limpeza do Salão", False)),
+            ("Relatórios de Serviço", "Relatórios de Serviço de Campo", "btn_rel", is_admin or acessos.get("Relatórios de Serviço de Campo", False))
+        ]
 
-        with col1:
-            st.markdown('<div class="card_home">', unsafe_allow_html=True)
-            st.subheader("Gestão de Literatura")
-            st.write("Encomendas de livros e controlo de receções.")
-            pendentes_count = len(df_literatura[df_literatura["Recebido"] == False]) if not df_literatura.empty else 0
-            st.caption(f"{pendentes_count} encomenda(s) pendente(s)")
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Abrir Literatura", key="btn_lit", use_container_width=True, type="primary"):
-                st.session_state.pagina_atual = "Gestão de Literatura"
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
+        for i, (titulo_cartao, destino, chave_btn, tem_acesso) in enumerate(todos_cartoes):
+            with colunas[i]:
+                st.markdown('<div class="card_home">', unsafe_allow_html=True)
+                st.subheader(titulo_cartao)
+                st.markdown("<br><br>", unsafe_allow_html=True)
+                if tem_acesso:
+                    if st.button(f"Abrir", key=chave_btn, use_container_width=True, type="primary"):
+                        st.session_state.pagina_atual = destino
+                        st.rerun()
+                else:
+                    st.caption("Acesso não atribuído")
+                st.markdown('</div>', unsafe_allow_html=True)
 
-        with col2:
-            st.markdown('<div class="card_home">', unsafe_allow_html=True)
-            st.subheader("Territórios")
-            st.write("Gestão de mapas, fotos e ficheiros de territórios.")
-            st.caption("Módulo ativo")
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Abrir Territórios", key="btn_terr", use_container_width=True, type="primary"):
-                st.session_state.pagina_atual = "Territórios"
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with col3:
-            st.markdown('<div class="card_home">', unsafe_allow_html=True)
-            st.subheader("Limpeza do Salão")
-            st.write("Escalas de limpeza e registo de tarefas.")
-            st.caption("Módulo ativo")
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Abrir Limpeza", key="btn_limp", use_container_width=True, type="primary"):
-                st.session_state.pagina_atual = "Limpeza do Salão"
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with col4:
-            st.markdown('<div class="card_home">', unsafe_allow_html=True)
-            st.subheader("Relatórios de Serviço")
-            st.write("Registo mensal de relatórios de serviço de campo.")
-            st.caption("Módulo ativo")
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Abrir Relatórios", key="btn_rel", use_container_width=True, type="primary"):
-                st.session_state.pagina_atual = "Relatórios de Serviço de Campo"
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    # --------------------------------------------------------------------------
-    # 2. TERRITÓRIOS
-    # --------------------------------------------------------------------------
+    # TERRITÓRIOS
     elif st.session_state.pagina_atual == "Territórios":
         if st.button("Voltar ao Painel Principal"):
             st.session_state.pagina_atual = "Página Inicial"
             st.rerun()
 
         st.title("Gestão de Territórios")
-
         tab_ver_terr, tab_add_terr = st.tabs(["Consultar Territórios", "Adicionar / Carregar Ficheiro"])
 
         with tab_ver_terr:
-            st.subheader("Mapas e Ficheiros de Territórios")
             lista_territorios = carregar_territorios()
-
             if lista_territorios:
                 for terr in lista_territorios:
                     t_id, t_num, t_nome, t_obs, f_nome, f_tipo, f_bytes = terr
-                    
                     with st.expander(f"Território Nº {t_num} - {t_nome}", expanded=False):
-                        if t_obs:
-                            st.write(f"**Observações:** {t_obs}")
-
+                        if t_obs: st.write(f"**Observações:** {t_obs}")
                         if f_bytes:
-                            st.markdown("---")
                             if f_tipo and "image" in f_tipo:
                                 st.image(f_bytes, caption=f_nome, use_container_width=True)
-                            
-                            st.download_button(
-                                label=f"Descarregar Ficheiro ({f_nome})",
-                                data=bytes(f_bytes),
-                                file_name=f_nome,
-                                mime=f_tipo,
-                                key=f"dl_{t_id}"
-                            )
-                        else:
-                            st.caption("Sem ficheiro anexado.")
+                            st.download_button(label=f"Descarregar Ficheiro ({f_nome})", data=bytes(f_bytes), file_name=f_nome, mime=f_tipo, key=f"dl_{t_id}")
             else:
                 st.info("Ainda não existem territórios registados.")
 
         with tab_add_terr:
-            st.subheader("Adicionar Novo Território")
-            
             with st.form("form_territorio", clear_on_submit=True):
                 c_num, c_nome = st.columns([1, 2])
-                num_terr = c_num.text_input("Nº do Território", placeholder="Ex: 05")
-                nome_area = c_nome.text_input("Nome / Área", placeholder="Ex: Centro da Cidade / Bairro Sol")
-                
-                obs_terr = st.text_area("Notas / Observações", placeholder="Ex: Terreno inclinado, cães na rua principal...")
-                
-                ficheiro_terr = st.file_uploader(
-                    "Carregar Foto ou Ficheiro (PNG, JPG, JPEG, PDF)", 
-                    type=["png", "jpg", "jpeg", "pdf", "webp"]
-                )
-
-                btn_guardar_terr = st.form_submit_button("Guardar Território", type="primary", use_container_width=True)
-
-                if btn_guardar_terr:
+                num_terr = c_num.text_input("Nº do Território")
+                nome_area = c_nome.text_input("Nome / Área")
+                obs_terr = st.text_area("Notas / Observações")
+                ficheiro_terr = st.file_uploader("Carregar Foto ou Ficheiro", type=["png", "jpg", "jpeg", "pdf", "webp"])
+                if st.form_submit_button("Guardar Território", type="primary", use_container_width=True):
                     if num_terr and nome_area:
                         sucesso, msg = guardar_territorio(num_terr, nome_area, obs_terr, ficheiro_terr)
-                        if sucesso:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                    else:
-                        st.warning("Por favor preencha o número do território e o nome da área.")
+                        if sucesso: st.success(msg); st.rerun()
+                        else: st.error(msg)
+                    else: st.warning("Preencha o número e nome da área.")
 
-    # --------------------------------------------------------------------------
-    # 3. PAINEL DE APROVAÇÕES (ADMINISTRADOR)
-    # --------------------------------------------------------------------------
-    elif st.session_state.pagina_atual == "Painel de Aprovações" and is_admin:
-        st.title("Painel de Aprovação de Utilizadores")
-        st.caption("Verifique os dados dos novos utilizadores e aprove ou recuse o acesso.")
-
-        df_pendentes = carregar_utilizadores_pendentes()
-
-        if not df_pendentes.empty:
-            st.subheader(f"Pedidos Pendentes ({len(df_pendentes)})")
-            
-            for index, row in df_pendentes.iterrows():
-                with st.container():
-                    col_info, col_btn1, col_btn2 = st.columns([3, 1, 1])
-                    
-                    with col_info:
-                        st.write(f"**{row['nome']}** ({row['idade']} anos)")
-                        st.write(f"Congregação: **{row['congregacao']}** | E-mail: `{row['email']}`")
-                        st.caption(f"Data do Registo: {row['data_registro']}")
-
-                    with col_btn1:
-                        if st.button("Aprovar", key=f"ap_btn_{row['id']}", use_container_width=True, type="primary"):
-                            alterar_status_utilizador(row['id'], aprovar=True)
-                            st.toast(f"Utilizador {row['nome']} aprovado!")
+    # PAINEL DE ADMINISTRAÇÃO
+    elif st.session_state.pagina_atual == "Painel de Administração e Acessos" and is_admin:
+        st.title("Painel de Controlo de Utilizadores e Acessos")
+        df_users = carregar_utilizadores_sistema()
+        if not df_users.empty:
+            for index, row in df_users.iterrows():
+                with st.expander(f"{row['nome']} ({row['email']})", expanded=False):
+                    with st.form(f"form_user_{row['id']}"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            novo_aprovado = st.checkbox("Conta Aprovada", value=bool(row['aprovado']), key=f"ap_{row['id']}")
+                            novo_admin = st.checkbox("Administrador", value=bool(row['is_admin']), key=f"adm_{row['id']}")
+                        with col2:
+                            acc_lit = st.checkbox("Literatura", value=bool(row['acesso_literatura']), key=f"lit_{row['id']}")
+                            acc_terr = st.checkbox("Territórios", value=bool(row['acesso_territorios']), key=f"terr_{row['id']}")
+                            acc_limp = st.checkbox("Limpeza", value=bool(row['acesso_limpeza']), key=f"limp_{row['id']}")
+                            acc_rel = st.checkbox("Relatórios", value=bool(row['acesso_relatorios']), key=f"rel_{row['id']}")
+                        if st.form_submit_button("Guardar Alterações", type="primary"):
+                            atualizar_permissoes_utilizador(row['id'], novo_aprovado, novo_admin, acc_lit, acc_terr, acc_limp, acc_rel)
+                            st.success("Atualizado!")
                             st.rerun()
 
-                    with col_btn2:
-                        if st.button("Recusar", key=f"rec_btn_{row['id']}", use_container_width=True):
-                            alterar_status_utilizador(row['id'], aprovar=False)
-                            st.toast(f"Pedido de {row['nome']} recusado.")
-                            st.rerun()
-                    st.markdown("---")
-        else:
-            st.success("Não há registos pendentes de aprovação neste momento.")
-
-    # --------------------------------------------------------------------------
-    # 4. GESTÃO DE LITERATURA
-    # --------------------------------------------------------------------------
+    # GESTÃO DE LITERATURA
     elif st.session_state.pagina_atual == "Gestão de Literatura":
         if st.button("Voltar ao Painel Principal"):
             st.session_state.pagina_atual = "Página Inicial"
             st.rerun()
-
         st.title("Gestão de Literatura")
-
-        aba1, aba2, aba3 = st.tabs([
-            "Nova Encomenda", 
-            "Tabela e Histórico", 
-            "Gestão e Eliminação"
-        ])
-
+        aba1, aba2, aba3 = st.tabs(["Nova Encomenda", "Tabela e Histórico", "Eliminar"])
         with aba1:
-            st.subheader("Registar Novo Pedido")
-            st.caption("Preencha as informações da nova encomenda abaixo.")
-
             with st.form("form_encomenda", clear_on_submit=True):
                 c1, c2 = st.columns([2, 1])
-                nome_livro = c1.text_input("Nome do Livro", placeholder="Ex: O Principezinho")
-                numero_pedido = c2.text_input("Nº do Pedido", placeholder="Ex: PED-2024-001")
-
-                c3, c4 = st.columns([2, 1])
-                requerente = c3.text_input("Requerente", placeholder="Ex: Maria Silva")
-                data_pedido = c4.date_input("Data do Pedido", value=datetime.now())
-
-                st.markdown("---")
-                submetido = st.form_submit_button("Guardar Encomenda", type="primary", use_container_width=True)
-
-                if submetido:
-                    if nome_livro and requerente and numero_pedido:
-                        try:
-                            conn = get_connection()
-                            cursor = conn.cursor()
-                            cursor.execute(
-                                """
-                                INSERT INTO encomendas (numero_pedido, nome_livro, requerente, data_pedido, recebido, data_recebimento) 
-                                VALUES (%s, %s, %s, %s, FALSE, NULL)
-                                """,
-                                (numero_pedido, nome_livro, requerente, data_pedido)
-                            )
-                            conn.commit()
-                            cursor.close()
-                            conn.close()
-                            st.toast(f"Encomenda '{nome_livro}' registada com sucesso!")
-                        except Exception as e:
-                            st.error(f"Erro ao guardar: {e}")
-                    else:
-                        st.warning("Por favor preencha todos os campos obrigatórios.")
-
-        with aba2:
-            st.subheader("Histórico Completo de Encomendas")
-
-            if not df_literatura.empty:
-                with st.expander("Marcar Encomenda como Recebida", expanded=True):
-                    st.caption("Selecione uma encomenda pendente para atualizar o seu estado.")
-                    
-                    df_pendentes = df_literatura[df_literatura["Recebido"] == False].copy()
-                    
-                    if not df_pendentes.empty:
-                        col_rec1, col_rec2 = st.columns([3, 1])
-                        df_pendentes["label"] = df_pendentes["ID"].astype(str) + " - " + df_pendentes["Nome do Livro"].astype(str) + " (" + df_pendentes["Requerente"].astype(str) + ")"
-                        
-                        encomenda_sel = col_rec1.selectbox("Encomendas Pendentes:", options=df_pendentes["label"].tolist())
-                        btn_marcar_recebido = col_rec2.button("Confirmar Recebimento", type="primary", use_container_width=True)
-                        
-                        if btn_marcar_recebido:
-                            id_atualizar = int(encomenda_sel.split(" - ")[0])
-                            data_hora_atual = datetime.now().strftime("%d/%m/%Y %H:%M")
-                            
-                            try:
-                                conn = get_connection()
-                                cursor = conn.cursor()
-                                cursor.execute(
-                                    """
-                                    UPDATE encomendas 
-                                    SET recebido = TRUE, data_recebimento = %s 
-                                    WHERE id = %s
-                                    """,
-                                    (data_hora_atual, id_atualizar)
-                                )
-                                conn.commit()
-                                cursor.close()
-                                conn.close()
-                                st.success(f"Encomenda registada como recebida em {data_hora_atual}!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Erro ao atualizar estado: {e}")
-                    else:
-                        st.info("Todas as encomendas registadas já foram recebidas.")
-
-                st.markdown("---")
-
-                col_f1, col_f2, col_f3 = st.columns(3)
-                filtro_livro = col_f1.text_input("Filtrar por Livro:")
-                filtro_requerente = col_f2.text_input("Filtrar por Requerente:")
-                filtro_status = col_f3.selectbox("Estado:", ["Todos", "Recebidos", "Pendentes"])
-
-                df_filtrado = df_literatura.copy()
-                if filtro_livro:
-                    df_filtrado = df_filtrado[df_filtrado["Nome do Livro"].astype(str).str.contains(filtro_livro, case=False, na=False)]
-                if filtro_requerente:
-                    df_filtrado = df_filtrado[df_filtrado["Requerente"].astype(str).str.contains(filtro_requerente, case=False, na=False)]
-                if filtro_status == "Recebidos":
-                    df_filtrado = df_filtrado[df_filtrado["Recebido"] == True]
-                elif filtro_status == "Pendentes":
-                    df_filtrado = df_filtrado[df_filtrado["Recebido"] == False]
-
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total Exibido", len(df_filtrado))
-                m2.metric("Recebidos", len(df_filtrado[df_filtrado["Recebido"] == True]))
-                m3.metric("Pendentes", len(df_filtrado[df_filtrado["Recebido"] == False]))
-
-                st.markdown("---")
-                df_filtrado["Data/Hora de Recebimento"] = df_filtrado["Data/Hora de Recebimento"].fillna("Pendente")
-
-                st.dataframe(
-                    df_filtrado, 
-                    use_container_width=True,
-                    column_config={
-                        "Recebido": st.column_config.CheckboxColumn("Recebido?", default=False),
-                        "Data do Pedido": st.column_config.DateColumn("Data do Pedido", format="DD/MM/YYYY"),
-                        "Data/Hora de Recebimento": st.column_config.TextColumn("Data/Hora de Recebimento")
-                    },
-                    hide_index=True
-                )
-            else:
-                st.info("Ainda não existem encomendas registadas.")
-
-        with aba3:
-            st.subheader("Eliminar Encomenda Registada")
-
-            if not df_literatura.empty:
-                st.caption("Selecione a encomenda que pretende remover permanentemente.")
-                df_literatura["display_label"] = df_literatura["ID"].astype(str) + " - " + df_literatura["Nome do Livro"].astype(str) + " (" + df_literatura["Requerente"].astype(str) + ")"
-                
-                col_del1, col_del2 = st.columns([3, 1])
-                opcao_selecionada = col_del1.selectbox("Selecionar encomenda:", options=df_literatura["display_label"].tolist())
-                
-                id_para_eliminar = int(opcao_selecionada.split(" - ")[0])
-                btn_eliminar = col_del2.button("Eliminar Encomenda", type="primary", use_container_width=True)
-
-                if btn_eliminar:
-                    try:
+                nome_livro = c1.text_input("Nome do Livro")
+                numero_pedido = c2.text_input("Nº do Pedido")
+                requerente = st.text_input("Requerente")
+                data_pedido = st.date_input("Data do Pedido", value=datetime.now())
+                if st.form_submit_button("Guardar Encomenda", type="primary", use_container_width=True):
+                    if nome_livro and requerente:
                         conn = get_connection()
                         cursor = conn.cursor()
-                        cursor.execute("DELETE FROM encomendas WHERE id = %s", (id_para_eliminar,))
-                        conn.commit()
-                        cursor.close()
-                        conn.close()
-                        st.success("Encomenda removida com sucesso!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao eliminar encomenda: {e}")
+                        cursor.execute("INSERT INTO encomendas (numero_pedido, nome_livro, requerente, data_pedido, recebido) VALUES (%s, %s, %s, %s, FALSE)", (numero_pedido, nome_livro, requerente, data_pedido))
+                        conn.commit(); cursor.close(); conn.close()
+                        st.success("Guardado!")
+        with aba2:
+            if not df_literatura.empty:
+                st.dataframe(df_literatura, use_container_width=True, hide_index=True)
             else:
-                st.info("Não há registos disponíveis para eliminar.")
+                st.info("Sem encomendas.")
+        with aba3:
+            if not df_literatura.empty:
+                df_literatura["label"] = df_literatura["ID"].astype(str) + " - " + df_literatura["Nome do Livro"]
+                sel_enc = st.selectbox("Encomenda:", df_literatura["label"].tolist())
+                if st.button("Eliminar", type="primary"):
+                    id_del = int(sel_enc.split(" - ")[0])
+                    conn = get_connection(); cursor = conn.cursor()
+                    cursor.execute("DELETE FROM encomendas WHERE id = %s", (id_del,))
+                    conn.commit(); cursor.close(); conn.close()
+                    st.success("Eliminado!"); st.rerun()
 
-    # --------------------------------------------------------------------------
-    # 5. LIMPEZA DO SALÃO
-    # --------------------------------------------------------------------------
+    # LIMPEZA DO SALÃO
     elif st.session_state.pagina_atual == "Limpeza do Salão":
         if st.button("Voltar ao Painel Principal"):
             st.session_state.pagina_atual = "Página Inicial"
             st.rerun()
-
         st.title("Limpeza do Salão")
+        st.info("Escala e registo de limpeza.")
 
-        aba_limp1, aba_limp2 = st.tabs(["Escala de Limpeza", "Registo de Limpeza"])
-
-        with aba_limp1:
-            st.subheader("Escala de Limpeza")
-            st.info("Consulte ou defina os grupos responsáveis pela limpeza do salão esta semana.")
-
-        with aba_limp2:
-            st.subheader("Registar Limpeza Concluída")
-            with st.form("form_limpeza"):
-                grupo = st.selectbox("Grupo Responsável:", ["Grupo 1", "Grupo 2", "Grupo 3", "Grupo 4"])
-                data_limpeza = st.date_input("Data da Limpeza:", value=datetime.now())
-                observacoes = st.text_area("Observações / Necessidades de Material:")
-                btn_salvar_limpeza = st.form_submit_button("Guardar Registo", type="primary")
-
-    # --------------------------------------------------------------------------
-    # 6. RELATÓRIOS DE SERVIÇO DE CAMPO
-    # --------------------------------------------------------------------------
+    # RELATÓRIOS DE SERVIÇO DE CAMPO (CALENDÁRIO + RESUMO MENSAL + RESUMO ANUAL)
     elif st.session_state.pagina_atual == "Relatórios de Serviço de Campo":
         if st.button("Voltar ao Painel Principal"):
             st.session_state.pagina_atual = "Página Inicial"
@@ -779,25 +588,157 @@ else:
 
         st.title("Relatórios de Serviço de Campo")
 
-        aba_rel1, aba_rel2 = st.tabs(["Entregar Relatório", "Resumo Mensal"])
+        aba_rel1, aba_rel2, aba_rel3 = st.tabs(["Calendário Diário", "Resumo Mensal", "Resumo Anual (Set - Ago)"])
 
+        # ABAS 1: CALENDÁRIO DIÁRIO IMEDIATO DO MÊS ATUAL
         with aba_rel1:
-            st.subheader("Novo Relatório Mensal")
-            with st.form("form_relatorio", clear_on_submit=True):
-                nome_publicador = st.text_input("Nome do Publicador", value=st.session_state.utilizador_nome)
-                mes_ano = st.date_input("Mês de Referência", value=datetime.now())
+            st.subheader(f"Calendário Diário — {datetime.now().strftime('%B de %Y').capitalize()}")
+            st.caption("Selecione um dia do mês atual para adicionar ou atualizar os seus detalhes de pregação.")
+
+            hoje = date.today()
+            ano_atual = hoje.year
+            mes_atual = hoje.month
+
+            num_dias_mes = calendar.monthrange(ano_atual, mes_atual)[1]
+            dias_opcoes = [date(ano_atual, mes_atual, d) for d in range(1, num_dias_mes + 1)]
+
+            with st.form("form_calendario_diario"):
+                dia_escolhido = st.selectbox(
+                    "Escolha o Dia do Mês",
+                    options=dias_opcoes,
+                    format_func=lambda x: x.strftime("%d/%m/%Y (%A)")
+                )
+
+                com_quem = st.text_input("Com quem pregou?", placeholder="Ex: João Silva")
                 
-                c1, c2, c3 = st.columns(3)
-                publicacoes = c1.number_input("Publicações", min_value=0, step=1)
-                videos = c2.number_input("Vídeos Mostrados", min_value=0, step=1)
-                horas = c3.number_input("Horas", min_value=0, step=1)
+                col_h, col_e = st.columns(2)
+                horas = col_h.number_input("Horas", min_value=0, value=0, step=1)
+                estudos = col_e.number_input("Estudos Bíblicos", min_value=0, value=0, step=1)
 
-                c4, c5 = st.columns(2)
-                revisitas = c4.number_input("Revisitas", min_value=0, step=1)
-                estudos = c5.number_input("Estudos Bíblicos", min_value=0, step=1)
+                btn_guardar_apontamento = st.form_submit_button("Guardar / Atualizar Dia", type="primary", use_container_width=True)
 
-                btn_relatorio = st.form_submit_button("Submeter Relatório", type="primary", use_container_width=True)
+                if btn_guardar_apontamento:
+                    try:
+                        conn = get_connection()
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT id FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s AND data_pregação = %s",
+                            (st.session_state.utilizador_email.lower(), dia_escolhido)
+                        )
+                        registo_existente = cursor.fetchone()
 
+                        if registo_existente:
+                            cursor.execute(
+                                """
+                                UPDATE relatorios_diarios 
+                                SET com_quem = %s, horas = %s, estudios = %s 
+                                WHERE id = %s
+                                """,
+                                (com_quem, horas, estudos, registo_existente[0])
+                            )
+                            msg_ret = "Apontamento do dia atualizado com sucesso!"
+                        else:
+                            cursor.execute(
+                                """
+                                INSERT INTO relatorios_diarios (email_utilizador, nome_publicador, data_pregação, com_quem, horas, estudios)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                                """,
+                                (st.session_state.utilizador_email.lower(), st.session_state.utilizador_nome, dia_escolhido, com_quem, horas, estudos)
+                            )
+                            msg_ret = "Apontamento do dia guardado com sucesso!"
+
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                        st.success(msg_ret)
+                    except Exception as e:
+                        st.error(f"Erro ao guardar: {e}")
+
+            st.markdown("---")
+            st.subheader("Os seus registos deste mês")
+            try:
+                conn = get_connection()
+                if is_admin:
+                    q_mes = "SELECT id, nome_publicador, data_pregação, com_quem, horas, estudios FROM relatorios_diarios WHERE EXTRACT(MONTH FROM data_pregação) = %s AND EXTRACT(YEAR FROM data_pregação) = %s ORDER BY data_pregação DESC"
+                    df_mes_atual = pd.read_sql_query(q_mes, conn, params=(mes_atual, ano_atual))
+                else:
+                    q_mes = "SELECT id, nome_publicador, data_pregação, com_quem, horas, estudios FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s AND EXTRACT(MONTH FROM data_pregação) = %s AND EXTRACT(YEAR FROM data_pregação) = %s ORDER BY data_pregação DESC"
+                    df_mes_atual = pd.read_sql_query(q_mes, conn, params=(st.session_state.utilizador_email.lower(), mes_atual, ano_atual))
+                conn.close()
+
+                if not df_mes_atual.empty:
+                    st.dataframe(df_mes_atual, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Ainda não tem apontamentos para este mês.")
+            except Exception as e:
+                st.error(f"Erro ao carregar dados do mês: {e}")
+
+        # ABA 2: RESUMO MENSAL
         with aba_rel2:
-            st.subheader("Resumo do Mês")
-            st.info("Aqui serão apresentados os totais acumulados de horas e publicações do mês.")
+            st.subheader("Resumo Mensal Consolidado")
+            st.caption("Visão agregada de todos os meses em que foram submetidos relatórios.")
+
+            try:
+                conn = get_connection()
+                if is_admin:
+                    q_geral = "SELECT data_pregação, horas, estudios, nome_publicador FROM relatorios_diarios"
+                    df_all = pd.read_sql_query(q_geral, conn)
+                else:
+                    q_geral = "SELECT data_pregação, horas, estudios, nome_publicador FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s"
+                    df_all = pd.read_sql_query(q_geral, conn, params=(st.session_state.utilizador_email.lower(),))
+                conn.close()
+
+                if not df_all.empty:
+                    df_all["data_pregação"] = pd.to_datetime(df_all["data_pregação"])
+                    df_all["Mes_Ano"] = df_all["data_pregação"].dt.to_period("M").astype(str)
+
+                    df_resumo_mensal = df_all.groupby("Mes_Ano")[["horas", "estudos"]].sum().reset_index()
+                    df_resumo_mensal = df_resumo_mensal.sort_values("Mes_Ano", ascending=False)
+
+                    st.dataframe(df_resumo_mensal, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Ainda não existem dados para gerar o resumo mensal.")
+            except Exception as e:
+                st.error(f"Erro ao gerar resumo mensal: {e}")
+
+        # ABA 3: RESUMO ANUAL (Setembro a Agosto)
+        with aba_rel3:
+            st.subheader("Resumo Anual de Serviço (Setembro a Agosto)")
+            st.caption("Ano de Serviço organizado oficialmente de Setembro do ano anterior até Agosto do ano corrente.")
+
+            try:
+                conn = get_connection()
+                if is_admin:
+                    df_anual = pd.read_sql_query("SELECT data_pregação, horas, estudios FROM relatorios_diarios", conn)
+                else:
+                    df_anual = pd.read_sql_query("SELECT data_pregação, horas, estudios FROM relatorios_diarios WHERE LOWER(email_utilizador) = %s", conn, params=(st.session_state.utilizador_email.lower(),))
+                conn.close()
+
+                if not df_anual.empty:
+                    df_anual["data_pregação"] = pd.to_datetime(df_anual["data_pregação"])
+
+                    def obter_ano_servico(dt):
+                        if dt.month >= 9:
+                            return f"{dt.year}/{dt.year + 1}"
+                        else:
+                            return f"{dt.year - 1}/{dt.year}"
+
+                    df_anual["Ano_Serviço"] = df_anual["data_pregação"].apply(obter_ano_servico)
+                    
+                    df_agrupado_anual = df_anual.groupby("Ano_Serviço")[["horas", "estudos"]].sum().reset_index()
+                    df_agrupado_anual = df_agrupado_anual.sort_values("Ano_Serviço")
+
+                    st.markdown("### 1. Tabela e Gráfico de Horas por Ano de Serviço")
+                    df_horas = df_agrupado_anual[["Ano_Serviço", "horas"]].set_index("Ano_Serviço")
+                    st.dataframe(df_horas, use_container_width=True)
+                    st.bar_chart(df_horas)
+
+                    st.markdown("---")
+                    st.markdown("### 2. Tabela e Gráfico de Estudos Bíblicos por Ano de Serviço")
+                    df_estudos = df_agrupado_anual[["Ano_Serviço", "estudos"]].set_index("Ano_Serviço")
+                    st.dataframe(df_estudos, use_container_width=True)
+                    st.bar_chart(df_estudos)
+                else:
+                    st.info("Sem dados suficientes para o resumo anual.")
+            except Exception as e:
+                st.error(f"Erro ao gerar resumo anual: {e}")
