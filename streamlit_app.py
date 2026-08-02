@@ -11,8 +11,8 @@ st.set_page_config(
     page_title="Painel de Gestão", layout="wide"
 )
 
-# E-mail principal definido como Administrador Principal fixo
-EMAIL_ADMINISTRADOR = "brunorodriguesj26@gmail.com"
+# E-mail principal definido como Administrador Principal fixo corrigido
+EMAIL_ADMINISTRADOR = "brunorodriguesjw26@gmail.com"
 
 # Estilo CSS ajustado
 st.markdown("""
@@ -103,7 +103,6 @@ def criar_tabelas():
         );
         """)
 
-        # Tabela de Relatórios Diários simplificada (com quem pregou, horas, estudos)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS relatorios_diarios (
             id SERIAL PRIMARY KEY,
@@ -159,8 +158,8 @@ def registar_utilizador(nome, congregacao, idade, email, password):
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        hash_pw = gerar_hash_password(password)
         email_clean = email.lower().strip()
+        hash_pw = gerar_hash_password(password)
         
         is_admin_principal = (email_clean == EMAIL_ADMINISTRADOR.lower())
         
@@ -186,9 +185,10 @@ def autenticar_utilizador(email, password):
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        email_clean = email.lower().strip()
         cursor.execute(
             "SELECT id, nome, password_hash, aprovado, email, is_admin, acesso_literatura, acesso_territorios, acesso_limpeza, acesso_relatorios FROM utilizadores WHERE LOWER(email) = %s", 
-            (email.lower().strip(),)
+            (email_clean,)
         )
         user = cursor.fetchone()
         cursor.close()
@@ -197,10 +197,12 @@ def autenticar_utilizador(email, password):
         if user:
             user_id, nome, hash_pw, aprovado, user_email, is_admin, lit, terr, limp, rel = user
             if verificar_password(password, hash_pw):
-                if not aprovado and user_email.lower() != EMAIL_ADMINISTRADOR.lower():
+                is_admin_principal = (user_email.lower() == EMAIL_ADMINISTRADOR.lower())
+                
+                if not aprovado and not is_admin_principal:
                     return False, "PENDENTE", "A sua conta ainda aguarda aprovação pelo administrador."
                 
-                if user_email.lower() == EMAIL_ADMINISTRADOR.lower():
+                if is_admin_principal:
                     is_admin = True
                     lit = terr = limp = rel = True
 
@@ -208,12 +210,12 @@ def autenticar_utilizador(email, password):
                     "id": user_id, 
                     "nome": nome, 
                     "email": user_email, 
-                    "is_admin": is_admin,
+                    "is_admin": is_admin or is_admin_principal,
                     "acessos": {
-                        "Literatura": lit,
-                        "Territórios": terr,
-                        "Limpeza do Salão": limp,
-                        "Relatórios de Serviço de Campo": rel
+                        "Literatura": True if is_admin_principal else lit,
+                        "Territórios": True if is_admin_principal else terr,
+                        "Limpeza do Salão": True if is_admin_principal else limp,
+                        "Relatórios de Serviço de Campo": True if is_admin_principal else rel
                     }
                 }
         return False, "ERRO", "E-mail ou palavra-passe incorretos."
@@ -429,6 +431,7 @@ else:
     
     opcoes_menu = ["Página Inicial"]
     acessos = st.session_state.acessos
+    
     if is_admin or acessos.get("Literatura", False):
         opcoes_menu.append("Gestão de Literatura")
     if is_admin or acessos.get("Territórios", False):
@@ -580,7 +583,7 @@ else:
         st.title("Limpeza do Salão")
         st.info("Escala e registo de limpeza.")
 
-    # RELATÓRIOS DE SERVIÇO DE CAMPO (CALENDÁRIO + RESUMO MENSAL + RESUMO ANUAL)
+    # RELATÓRIOS DE SERVIÇO DE CAMPO
     elif st.session_state.pagina_atual == "Relatórios de Serviço de Campo":
         if st.button("Voltar ao Painel Principal"):
             st.session_state.pagina_atual = "Página Inicial"
@@ -590,7 +593,6 @@ else:
 
         aba_rel1, aba_rel2, aba_rel3 = st.tabs(["Calendário Diário", "Resumo Mensal", "Resumo Anual (Set - Ago)"])
 
-        # ABAS 1: CALENDÁRIO DIÁRIO IMEDIATO DO MÊS ATUAL
         with aba_rel1:
             st.subheader(f"Calendário Diário — {datetime.now().strftime('%B de %Y').capitalize()}")
             st.caption("Selecione um dia do mês atual para adicionar ou atualizar os seus detalhes de pregação.")
@@ -673,7 +675,6 @@ else:
             except Exception as e:
                 st.error(f"Erro ao carregar dados do mês: {e}")
 
-        # ABA 2: RESUMO MENSAL
         with aba_rel2:
             st.subheader("Resumo Mensal Consolidado")
             st.caption("Visão agregada de todos os meses em que foram submetidos relatórios.")
@@ -701,7 +702,6 @@ else:
             except Exception as e:
                 st.error(f"Erro ao gerar resumo mensal: {e}")
 
-        # ABA 3: RESUMO ANUAL (Setembro a Agosto)
         with aba_rel3:
             st.subheader("Resumo Anual de Serviço (Setembro a Agosto)")
             st.caption("Ano de Serviço organizado oficialmente de Setembro do ano anterior até Agosto do ano corrente.")
